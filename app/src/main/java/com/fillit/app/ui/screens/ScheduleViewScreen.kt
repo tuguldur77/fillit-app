@@ -1,5 +1,6 @@
 package com.fillit.app.ui.screens
 
+import android.util.Log
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
@@ -71,7 +72,7 @@ fun ScheduleViewScreen(
     current: Route,
     onNavigate: (Route) -> Unit,
     onAddClick: () -> Unit,
-    onOpenRecommendationsForSlot: (Long, Long) -> Unit,
+    onOpenRecommendationsForSlot: (Long, Long, Double?, Double?, String?) -> Unit,
     scheduleViewModel: ScheduleViewModel = viewModel(),
     onEditEvent: (Event) -> Unit = {},
     onDeleteEvent: (Event) -> Unit = { scheduleViewModel.deleteEvent(it.id) }
@@ -137,10 +138,32 @@ fun ScheduleViewScreen(
                                 onClick = { onEditEvent(item.event) },
                                 onLongClick = { deletingEvent = item.event }
                             )
-                            is TimelineItem.EmptySlot -> EmptySlotCard(item.startTime, item.endTime) {
-                                val startMillis = item.startTime.toDate().time
-                                val endMillis = item.endTime.toDate().time
-                                onOpenRecommendationsForSlot(startMillis, endMillis)
+                            is TimelineItem.EmptySlot -> {
+                                val idx = uiState.timeline.indexOf(item)
+                                val previousEvent = uiState.timeline
+                                    .subList(0, idx)
+                                    .lastOrNull { it is TimelineItem.EventItem }
+                                    ?.let { (it as TimelineItem.EventItem).event }
+
+                                val freeOriginLat = previousEvent?.location?.lat
+                                val freeOriginLng = previousEvent?.location?.lng
+                                val freeOriginName = previousEvent?.location?.name
+
+                                EmptySlotCard(item.startTime, item.endTime) {
+                                    val startMillis = item.startTime.toDate().time
+                                    val endMillis = item.endTime.toDate().time
+
+                                    Log.d("CAL_SLOT_ORIGIN", "prevEvent=${previousEvent?.title}")
+                                    Log.d("CAL_SLOT_ORIGIN", "freeOrigin=($freeOriginLat,$freeOriginLng) name=$freeOriginName")
+
+                                    onOpenRecommendationsForSlot(
+                                        startMillis,
+                                        endMillis,
+                                        freeOriginLat,
+                                        freeOriginLng,
+                                        freeOriginName
+                                    )
+                                }
                             }
                         }
                     }

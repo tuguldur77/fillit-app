@@ -57,16 +57,37 @@ fun RecommendationScreen(
     freeEndMillis: Long? = null,
     freeOriginLat: Double? = null,    // NEW optional origin params
     freeOriginLng: Double? = null,    // NEW optional origin params
+    freeOriginName: String? = null,   // NEW
     viewModel: RecommendationViewModel,
     onPlaceClick: (UiPlace, Long?, Long?) -> Unit = { _, _, _ -> }
 ) {
     val context = LocalContext.current
 
-    LaunchedEffect(freeStartMillis to freeEndMillis to freeOriginLat to freeOriginLng) {
+    LaunchedEffect(freeStartMillis to freeEndMillis to freeOriginLat to freeOriginLng to freeOriginName) {
         if (freeStartMillis != null && freeEndMillis != null) {
-            // free-slot mode: always call slot API; preserve origin if provided
-            viewModel.loadForFreeSlot(freeStartMillis, freeEndMillis, originLat = freeOriginLat, originLng = freeOriginLng)
+            Log.d(
+                "SLOT_ORIGIN_TRACE",
+                "enter free-slot mode freeOrigin=($freeOriginLat,$freeOriginLng) name=$freeOriginName slot=($freeStartMillis,$freeEndMillis)"
+            )
+            if (freeOriginLat == null || freeOriginLng == null) {
+                Log.w("SLOT_ORIGIN_TRACE", "free-slot origin missing from calendar flow; geocode/fallback path will be used")
+            }
+
+            viewModel.enterSlotMode(
+                startMillis = freeStartMillis,
+                endMillis = freeEndMillis,
+                originLat = freeOriginLat,
+                originLng = freeOriginLng
+            )
+            viewModel.loadForFreeSlot(
+                startMillis = freeStartMillis,
+                endMillis = freeEndMillis,
+                originLat = freeOriginLat,
+                originLng = freeOriginLng,
+                originAddressText = freeOriginName // NEW: geocode fallback source
+            )
         } else {
+            viewModel.exitSlotMode()
             viewModel.loadNearbyPlaces(radius = 800)
         }
         // refresh recent searches when screen shows
@@ -152,10 +173,20 @@ fun RecommendationScreen(
                             onQueryChange = { searchQuery = it },
                             onSearch = {
                                 val kw = searchQuery.trim().takeIf { it.isNotBlank() }
-                                if (kw == null) {
-                                    viewModel.loadNearbyPlaces()
+                                val slotActive = viewModel.isInSlotMode() &&
+                                    viewModel.currentSlotStart() != null &&
+                                    viewModel.currentSlotEnd() != null
+
+                                if (slotActive) {
+                                    viewModel.loadForFreeSlot(
+                                        startMillis = viewModel.currentSlotStart()!!,
+                                        endMillis = viewModel.currentSlotEnd()!!,
+                                        originLat = viewModel.currentSlotOriginLat(),
+                                        originLng = viewModel.currentSlotOriginLng(),
+                                        searchKeyword = kw
+                                    )
                                 } else {
-                                    viewModel.loadNearbyPlaces(keyword = kw)
+                                    if (kw == null) viewModel.loadNearbyPlaces() else viewModel.onSearch(kw)
                                 }
                                 focusManager.clearFocus()
                             },
@@ -164,7 +195,21 @@ fun RecommendationScreen(
                         Spacer(Modifier.height(12.dp))
                         SuggestionChips(onPick = { picked ->
                             searchQuery = picked
-                            viewModel.loadNearbyPlaces(keyword = picked)
+                            val slotActive = viewModel.isInSlotMode() &&
+                                viewModel.currentSlotStart() != null &&
+                                viewModel.currentSlotEnd() != null
+
+                            if (slotActive) {
+                                viewModel.loadForFreeSlot(
+                                    startMillis = viewModel.currentSlotStart()!!,
+                                    endMillis = viewModel.currentSlotEnd()!!,
+                                    originLat = viewModel.currentSlotOriginLat(),
+                                    originLng = viewModel.currentSlotOriginLng(),
+                                    chip = picked
+                                )
+                            } else {
+                                viewModel.loadNearbyPlaces(keyword = picked)
+                            }
                             focusManager.clearFocus()
                         })
                         Spacer(Modifier.height(16.dp))
@@ -188,14 +233,20 @@ fun RecommendationScreen(
                                 },
                                 onSearch = {
                                     val kw = searchQuery.trim().takeIf { it.isNotBlank() }
-                                    if (kw == null) {
-                                        viewModel.loadNearbyPlaces()
+                                    val slotActive = viewModel.isInSlotMode() &&
+                                        viewModel.currentSlotStart() != null &&
+                                        viewModel.currentSlotEnd() != null
+
+                                    if (slotActive) {
+                                        viewModel.loadForFreeSlot(
+                                            startMillis = viewModel.currentSlotStart()!!,
+                                            endMillis = viewModel.currentSlotEnd()!!,
+                                            originLat = viewModel.currentSlotOriginLat(),
+                                            originLng = viewModel.currentSlotOriginLng(),
+                                            searchKeyword = kw
+                                        )
                                     } else {
-                                        if (freeStartMillis != null && freeEndMillis != null) {
-                                            viewModel.loadForFreeSlot(freeStartMillis, freeEndMillis, originLat = freeOriginLat, originLng = freeOriginLng, chip = kw)
-                                        } else {
-                                            viewModel.onSearch(kw)
-                                        }
+                                        if (kw == null) viewModel.loadNearbyPlaces() else viewModel.onSearch(kw)
                                     }
                                     focusManager.clearFocus()
                                     isSearchActive = false // hide recents after submit
@@ -250,8 +301,18 @@ fun RecommendationScreen(
                         Row(Modifier.padding(horizontal = 16.dp)) {
                             SuggestionChips(onPick = { picked ->
                                 searchQuery = picked
-                                if (freeStartMillis != null && freeEndMillis != null) {
-                                    viewModel.loadForFreeSlot(freeStartMillis, freeEndMillis, originLat = freeOriginLat, originLng = freeOriginLng, chip = picked)
+                                val slotActive = viewModel.isInSlotMode() &&
+                                    viewModel.currentSlotStart() != null &&
+                                    viewModel.currentSlotEnd() != null
+
+                                if (slotActive) {
+                                    viewModel.loadForFreeSlot(
+                                        startMillis = viewModel.currentSlotStart()!!,
+                                        endMillis = viewModel.currentSlotEnd()!!,
+                                        originLat = viewModel.currentSlotOriginLat(),
+                                        originLng = viewModel.currentSlotOriginLng(),
+                                        chip = picked
+                                    )
                                 } else {
                                     viewModel.loadNearbyPlaces(keyword = null, chip = picked)
                                 }

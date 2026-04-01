@@ -1,58 +1,59 @@
 package com.fillit.app.ui.screens
 
-import androidx.lifecycle.AndroidViewModel
+import android.Manifest
 import android.app.Application
+import android.content.pm.PackageManager
+import android.location.Geocoder
+import android.util.Log
+import android.widget.Toast
+import androidx.core.content.ContextCompat
+import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
-import com.fillit.app.data.remote.SearchPlacesApi
-import com.fillit.app.data.remote.NearbyRequest
+import com.fillit.app.BuildConfig
+import com.fillit.app.ServiceLocator
+import com.fillit.app.ai.GeminiHelper
+import com.fillit.app.data.SearchHistoryRepository
+import com.fillit.app.data.remote.DistanceMatrixApi
 import com.fillit.app.data.remote.LocationRequest
+import com.fillit.app.data.remote.NearbyRequest
+import com.fillit.app.data.remote.RecommendationForSlotRequest
+import com.fillit.app.data.remote.RecommendationOrigin
+import com.fillit.app.data.remote.SearchPlacesApi
+import com.fillit.app.data.remote.TextSearchRequest
+import com.fillit.app.data.remote.ValueText
 import com.fillit.app.model.UiPlace
+import com.fillit.app.preferences.UserPreferencesRepository
+import com.google.android.gms.location.LocationServices
+import com.google.firebase.Timestamp
 import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.firestore.FirebaseFirestore
-import com.fillit.app.ServiceLocator
+import com.google.firebase.firestore.Query
+import com.google.firebase.firestore.SetOptions
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.launch
-import retrofit2.HttpException
-import android.util.Log
-import com.fillit.app.BuildConfig
-import com.fillit.app.ai.GeminiHelper
-import com.google.firebase.firestore.SetOptions
-import com.fillit.app.data.remote.TextSearchRequest
-import kotlinx.coroutines.tasks.await
-import com.google.firebase.firestore.Query
-import com.fillit.app.preferences.UserPreferencesRepository
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.SharingStarted
-import android.Manifest
-import android.content.pm.PackageManager
-import androidx.core.content.ContextCompat
-import com.google.android.gms.location.LocationServices
-import com.google.firebase.Timestamp
-import retrofit2.Response
-import java.time.Instant
-import java.time.ZoneId
-import com.fillit.app.data.SearchHistoryRepository
-import com.fillit.app.data.remote.DistanceMatrixApi
-import com.fillit.app.data.remote.ValueText
-import retrofit2.Retrofit
-import retrofit2.converter.gson.GsonConverterFactory
-import java.util.Locale
-import com.fillit.app.data.remote.RecommendationForSlotRequest
-import com.fillit.app.data.remote.RecommendationOrigin
-import com.fillit.app.data.remote.RecommendationPlace
-import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.tasks.await
 import kotlinx.coroutines.withContext
-import java.text.Normalizer
 import okhttp3.MediaType.Companion.toMediaType
-import okhttp3.RequestBody.Companion.toRequestBody
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONArray
 import org.json.JSONObject
+import retrofit2.HttpException
+import retrofit2.Retrofit
+import retrofit2.converter.gson.GsonConverterFactory
+import java.text.Normalizer
+import java.time.Instant
+import java.time.ZoneId
+import java.util.Locale
+import java.util.concurrent.TimeUnit
 
 class RecommendationViewModel(application: Application) : AndroidViewModel(application) {
     private val auth: FirebaseAuth = FirebaseAuth.getInstance()
@@ -110,10 +111,10 @@ class RecommendationViewModel(application: Application) : AndroidViewModel(appli
     private val _likedIds = MutableStateFlow<Set<String>>(emptySet())
     val likedIds = _likedIds.asStateFlow()
 
+    // persistent slot-mode state
+    private var isSlotMode: Boolean = false
     private var slotStartMillis: Long? = null
     private var slotEndMillis: Long? = null
-
-    // Add these two missing properties (Double?) so slot origin is preserved and typed correctly
     private var slotOriginLat: Double? = null
     private var slotOriginLng: Double? = null
 
@@ -698,9 +699,11 @@ class RecommendationViewModel(application: Application) : AndroidViewModel(appli
         endMillis: Long,
         originLat: Double? = null,
         originLng: Double? = null,
-        chip: String? = null
+        chip: String? = null,
+        searchKeyword: String? = null,
+        originAddressText: String? = null // optional legacy string location for one-time geocode
     ) {
-        // preserve slot context
+        isSlotMode = true
         slotStartMillis = startMillis
         slotEndMillis = endMillis
         if (originLat != null && originLng != null) {
@@ -712,51 +715,71 @@ class RecommendationViewModel(application: Application) : AndroidViewModel(appli
             _loading.value = true
             _error.value = null
             try {
-                // Log current mode and slot context
-                Log.d("RecommendationVM", "mode=slot slotStart=$startMillis slotEnd=$endMillis slotOrigin=(${slotOriginLat},${slotOriginLng})")
+                Log.d(
+                    "SLOT_DEBUG",
+                    "isSlotMode=$isSlotMode slot=($slotStartMillis,$slotEndMillis) storedOrigin=($slotOriginLat,$slotOriginLng) incomingOrigin=($originLat,$originLng)"
+                )
 
-                // Determine origin to use: prefer preserved slot origin
                 var useLat = slotOriginLat
                 var useLng = slotOriginLng
 
+                // 1) legacy string-origin geocode path (explicit)
+                if ((useLat == null || useLng == null) && !originAddressText.isNullOrBlank()) {
+                    val geo = geocodeAddressOnce(originAddressText)
+                    if (geo != null) {
+                        useLat = geo.first
+                        useLng = geo.second
+                        slotOriginLat = useLat
+                        slotOriginLng = useLng
+                        Log.d("SLOT_ORIGIN_TRACE", "geocoded originAddressText='$originAddressText' -> ($useLat,$useLng)")
+                    } else {
+                        Log.w("SLOT_ORIGIN_TRACE", "failed geocode originAddressText='$originAddressText'")
+                    }
+                }
+
+                // 2) optional keyword geocode only when origin still missing
+                if ((useLat == null || useLng == null) && !searchKeyword.isNullOrBlank()) {
+                    val geo = geocodeAddressOnce(searchKeyword)
+                    if (geo != null) {
+                        useLat = geo.first
+                        useLng = geo.second
+                        slotOriginLat = useLat
+                        slotOriginLng = useLng
+                        Log.d("SLOT_ORIGIN_TRACE", "geocoded searchKeyword='$searchKeyword' -> ($useLat,$useLng)")
+                    }
+                }
+
+                // 3) explicit fallback only if truly unavailable
                 if (useLat == null || useLng == null) {
-                    // If no slot origin provided, try device location as fallback but log warning
-                    Log.w("RecommendationVM", "Slot origin not provided; falling back to device/location")
-                    val useDeviceLocation = userPrefs.useDeviceLocationFlow.first()
-                    if (useDeviceLocation && ContextCompat.checkSelfPermission(getApplication(), Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED) {
-                        runCatching { fusedLocationClient.lastLocation.await() }
-                            .getOrNull()
-                            ?.let { loc ->
-                                useLat = loc.latitude
-                                useLng = loc.longitude
-                                Log.d("RecommendationVM", "Fallback device location used for slot: $useLat, $useLng")
-                            }
-                    }
-                    if (useLat == null || useLng == null) {
-                        // final fallback to Seoul center
-                        useLat = 37.5665
-                        useLng = 126.9780
-                        Log.w("RecommendationVM", "No device location available; using default origin Seoul")
-                    }
-                }
-
-                // categories: default from settings, override with chip if provided (chip is temporary)
-                val settingsCategories = userPrefs.selectedCategoriesFlow.first().ifEmpty { setOf("카페") }
-                Log.d("RecommendationVM", "settingsCategories=${settingsCategories}")
-
-                val finalCategories = if (!chip.isNullOrBlank()) {
-                    listOf(chip)
+                    Log.w("SLOT_ORIGIN_TRACE", "slot origin unavailable -> fallback Seoul (37.5665,126.9780)")
+                    Toast.makeText(
+                        getApplication(),
+                        "슬롯 출발 위치를 확인하지 못해 기본 위치를 사용합니다.",
+                        Toast.LENGTH_SHORT
+                    ).show()
                 } else {
-                    settingsCategories.toList()
+                    Log.d("SLOT_MODE", "Using slot origin, not device location")
                 }
-                Log.d("RecommendationVM", "finalCategories(after chip)=$finalCategories chipParam=${chip ?: "<none>"}")
+
+                val finalLat = useLat ?: 37.5665
+                val finalLng = useLng ?: 126.9780
+
+                val settingsCategories = userPrefs.selectedCategoriesFlow.first().ifEmpty { setOf("카페") }
+                val finalCategories = when {
+                    !chip.isNullOrBlank() -> listOf(chip)
+                    !searchKeyword.isNullOrBlank() -> listOf(searchKeyword)
+                    else -> settingsCategories.toList()
+                }
+
+                Log.d("SLOT_MODE", "settingsCategories=$settingsCategories chip=$chip finalCategories=$finalCategories")
+                Log.d("SLOT_ORIGIN_FINAL", "origin=($finalLat,$finalLng) slot=($startMillis,$endMillis)")
 
                 val selectedTransports = transport.value.filter { it.value }.keys.toList()
                 val transportValue = if (selectedTransports.contains("자차") && !selectedTransports.contains("도보")) "car" else "walk"
                 val selectedTransportsForServer = if (transportValue == "car") listOf("자차") else listOf("도보")
 
                 val request = RecommendationForSlotRequest(
-                    origin = RecommendationOrigin(lat = useLat!!, lng = useLng!!),
+                    origin = RecommendationOrigin(lat = finalLat, lng = finalLng),
                     slotStart = startMillis,
                     slotEnd = endMillis,
                     categories = finalCategories,
@@ -768,7 +791,6 @@ class RecommendationViewModel(application: Application) : AndroidViewModel(appli
                     maxResults = 20
                 )
 
-                // Always use slot recommendation API for free-slot mode (do not call generic nearby flow)
                 val response = api.recommendForSlot(request)
                 val items = response.data?.places.orEmpty()
 
@@ -966,5 +988,50 @@ class RecommendationViewModel(application: Application) : AndroidViewModel(appli
             if (ordered.size >= maxCount) break
         }
         return ordered
+    }
+
+    /** slot-mode control APIs */
+    fun enterSlotMode(
+        startMillis: Long,
+        endMillis: Long,
+        originLat: Double?,
+        originLng: Double?
+    ) {
+        isSlotMode = true
+        slotStartMillis = startMillis
+        slotEndMillis = endMillis
+        slotOriginLat = originLat
+        slotOriginLng = originLng
+        Log.d(
+            "SLOT_MODE",
+            "isSlotMode=$isSlotMode origin=($slotOriginLat,$slotOriginLng) slot=($slotStartMillis,$slotEndMillis)"
+        )
+    }
+
+    fun exitSlotMode() {
+        isSlotMode = false
+        slotStartMillis = null
+        slotEndMillis = null
+        slotOriginLat = null
+        slotOriginLng = null
+        Log.d(
+            "SLOT_MODE",
+            "isSlotMode=$isSlotMode origin=($slotOriginLat,$slotOriginLng) slot=($slotStartMillis,$slotEndMillis)"
+        )
+    }
+
+    fun isInSlotMode(): Boolean = isSlotMode
+    fun currentSlotStart(): Long? = slotStartMillis
+    fun currentSlotEnd(): Long? = slotEndMillis
+    fun currentSlotOriginLat(): Double? = slotOriginLat
+    fun currentSlotOriginLng(): Double? = slotOriginLng
+
+    private suspend fun geocodeAddressOnce(raw: String): Pair<Double, Double>? = withContext(Dispatchers.IO) {
+        runCatching {
+            val geocoder = Geocoder(getApplication(), Locale.KOREA)
+            val list = geocoder.getFromLocationName(raw, 1)
+            val first = list?.firstOrNull() ?: return@runCatching null
+            Pair(first.latitude, first.longitude)
+        }.getOrNull()
     }
 }

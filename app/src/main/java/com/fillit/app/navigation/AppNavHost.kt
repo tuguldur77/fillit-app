@@ -3,6 +3,7 @@ package com.fillit.app.navigation
 
 import android.Manifest
 import android.content.pm.PackageManager
+import android.net.Uri
 import android.os.Build
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -145,8 +146,16 @@ fun AppNavHost(
                     val dateArg = selectedDate.format(dateFormatter)
                     navController.navigate("${Route.AddSchedule.name}?selectedDate=$dateArg")
                 },
-                onOpenRecommendationsForSlot = { startMillis, endMillis ->
-                    navController.navigate("${Route.Recommendations.name}?startMillis=$startMillis&endMillis=$endMillis")
+                onOpenRecommendationsForSlot = { startMillis, endMillis, originLat, originLng, originName ->
+                    val encodedName = Uri.encode(originName ?: "")
+                    navController.navigate(
+                        "${Route.Recommendations.name}" +
+                            "?startMillis=$startMillis" +
+                            "&endMillis=$endMillis" +
+                            "&originLat=${originLat ?: ""}" +
+                            "&originLng=${originLng ?: ""}" +
+                            "&originName=$encodedName"
+                    )
                 },
                 scheduleViewModel = scheduleViewModel
             )
@@ -174,16 +183,23 @@ fun AppNavHost(
             )
         }
         composable(
-            "${Route.Recommendations.name}?startMillis={startMillis}&endMillis={endMillis}",
+            "${Route.Recommendations.name}?startMillis={startMillis}&endMillis={endMillis}&originLat={originLat}&originLng={originLng}&originName={originName}",
             arguments = listOf(
                 navArgument("startMillis") { type = NavType.StringType; defaultValue = "" },
-                navArgument("endMillis") { type = NavType.StringType; defaultValue = "" }
+                navArgument("endMillis") { type = NavType.StringType; defaultValue = "" },
+                navArgument("originLat") { type = NavType.StringType; defaultValue = "" },
+                navArgument("originLng") { type = NavType.StringType; defaultValue = "" },
+                navArgument("originName") { type = NavType.StringType; defaultValue = "" }
             )
         ) { backStackEntry ->
             val startArg = backStackEntry.arguments?.getString("startMillis").orEmpty()
             val endArg = backStackEntry.arguments?.getString("endMillis").orEmpty()
             val startMillis = startArg.toLongOrNull()
             val endMillis = endArg.toLongOrNull()
+            val freeOriginLat = backStackEntry.arguments?.getString("originLat")?.toDoubleOrNull()
+            val freeOriginLng = backStackEntry.arguments?.getString("originLng")?.toDoubleOrNull()
+            val freeOriginName = backStackEntry.arguments?.getString("originName").orEmpty().ifBlank { null }
+
             val recommendationViewModel: RecommendationViewModel = viewModel(backStackEntry)
             RecommendationScreen(
                 current = Route.Recommendations,
@@ -192,6 +208,9 @@ fun AppNavHost(
                 onNavigate = { r -> navController.navigate(r.name) },
                 freeStartMillis = startMillis,
                 freeEndMillis = endMillis,
+                freeOriginLat = freeOriginLat,
+                freeOriginLng = freeOriginLng,
+                freeOriginName = freeOriginName,
                 viewModel = recommendationViewModel,
                 onPlaceClick = { p, s, e ->
                     navController.navigate(
@@ -200,7 +219,7 @@ fun AppNavHost(
                             name = p.name,
                             address = p.address,
                             rating = p.rating,
-                            imageUrl = p.imageUrl, // pass image URL so detail shows photo
+                            imageUrl = p.imageUrl,
                             startMillis = s,
                             endMillis = e
                         )

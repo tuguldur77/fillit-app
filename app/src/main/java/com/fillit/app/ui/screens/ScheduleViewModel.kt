@@ -1,5 +1,6 @@
 package com.fillit.app.ui.screens
 
+import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.fillit.app.model.Event
@@ -160,6 +161,14 @@ class ScheduleViewModel : ViewModel() {
                                 ?: Recurrence.NONE
                         )
                     }.getOrNull()
+                }
+
+                events.forEach { event ->
+                    Log.d("CAL_EVENT_PARSE", "title=${event.title} location=${event.location}")
+                    Log.d(
+                        "CAL_EVENT_PARSE",
+                        "locationName=${event.location?.name} lat=${event.location?.lat} lng=${event.location?.lng}"
+                    )
                 }
 
                 _uiState.update {
