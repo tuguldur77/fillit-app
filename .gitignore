@@ -1,0 +1,80 @@
+# Google Services and local configs
+# (Keep ignored unless you want to share Firebase config; remove lines below to commit it.)
+google-services.json
+app/google-services.json
+local.properties
+serviceAccountKey.json
+
+# Gradle caches & build output
+.gradle/
+build/
+*/build/
+.kotlin/
+# Keep the wrapper JAR so builds work without download
+!gradle/wrapper/gradle-wrapper.jar
+
+# Android Studio / IntelliJ project files
+.idea/
+*.iml
+*.ipr
+*.iws
+/out/
+
+# Kotlin annotation processing (kapt) generated sources (handled in build dirs already, but belt-and-suspenders)
+**/build/**/kapt/**
+**/build/**/ksp/**
+
+# Binary / packaged artifacts
+*.apk
+*.apks
+*.aab
+*.aar
+*.dex
+*.class
+
+# Native / compiled libs (produced in build; if you manually add .so libs under app/src/main/jniLibs keep them by placing there)
+*.so
+*.dll
+*.dylib
+
+# Archives (avoid committing transient dependency jars; commit only if intentionally placed under libs/)
+# Ignore jars generated in build output but allow those placed in app/libs intentionally
+*.jar
+!app/libs/*.jar
+
+# Performance / profiling / dumps
+java_pid*.hprof
+*.hprof
+
+# Crash logs / debug logs
+*.log
+
+# OS junk
+.DS_Store
+Thumbs.db
+
+# Git filter repo temp files
+git-filter-repo/
+
+# Captures and external builds
+captures/
+.externalNativeBuild/
+.cxx/
+
+# Navigation & generated metadata (in build directories already)
+**/build/**/navigation_json/
+
+# Misc temporary files
+*.tmp
+*.orig
+*.bak
+
+# Node / yarn (if any JS tooling added later)
+node_modules/
+
+# VSCode (if used alongside Android Studio)
+.vscode/
+
+# Keystore (never commit signing keys)
+*.jks
+*.keystore

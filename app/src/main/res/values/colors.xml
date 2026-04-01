@@ -1,0 +1,11 @@
+<resources>
+    <!-- Map Tailwind-like palette into Compose theme tokens -->
+    <color name="md_theme_primary">#4F46E5</color> <!-- indigo-600 -->
+    <color name="md_theme_onPrimary">#FFFFFF</color>
+    <color name="md_theme_background">#F8FAFC</color> <!-- slate-50 -->
+    <color name="md_theme_onBackground">#1E293B</color>
+    <color name="md_theme_surface">#FFFFFF</color>
+    <color name="md_theme_onSurface">#1E293B</color>
+    <color name="md_theme_secondary">#E0E7FF</color>
+    <color name="md_theme_onSecondary">#3730A3</color>
+</resources>
