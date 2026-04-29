@@ -2,7 +2,6 @@
 
 package com.fillit.app.ui.screens
 
-import android.app.Application
 import android.util.Log
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -28,8 +27,6 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalFocusManager
-import androidx.compose.ui.res.painterResource
-import com.fillit.app.R
 import com.fillit.app.navigation.Route
 import com.fillit.app.ui.components.FillItBottomBar
 import com.fillit.app.model.UiPlace
@@ -40,12 +37,14 @@ import coil.compose.AsyncImage
 import com.fillit.app.preferences.UserPreferencesRepository
 import androidx.compose.runtime.collectAsState
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.graphics.vector.rememberVectorPainter
+import com.fillit.app.ui.components.StepLoadingOverlay
 
 @Composable
 fun RecommendationScreen(
@@ -58,12 +57,33 @@ fun RecommendationScreen(
     freeOriginLat: Double? = null,    // NEW optional origin params
     freeOriginLng: Double? = null,    // NEW optional origin params
     freeOriginName: String? = null,   // NEW
+    prevEventId: String? = null,
+    prevEventTitle: String? = null,
+    prevEventStartMillis: Long? = null,
+    prevEventEndMillis: Long? = null,
+    nextEventId: String? = null,
+    nextEventTitle: String? = null,
+    nextEventStartMillis: Long? = null,
+    nextEventEndMillis: Long? = null,
     viewModel: RecommendationViewModel,
     onPlaceClick: (UiPlace, Long?, Long?) -> Unit = { _, _, _ -> }
 ) {
-    val context = LocalContext.current
 
-    LaunchedEffect(freeStartMillis to freeEndMillis to freeOriginLat to freeOriginLng to freeOriginName) {
+    LaunchedEffect(
+        freeStartMillis,
+        freeEndMillis,
+        freeOriginLat,
+        freeOriginLng,
+        freeOriginName,
+        prevEventId,
+        prevEventTitle,
+        prevEventStartMillis,
+        prevEventEndMillis,
+        nextEventId,
+        nextEventTitle,
+        nextEventStartMillis,
+        nextEventEndMillis
+    ) {
         if (freeStartMillis != null && freeEndMillis != null) {
             Log.d(
                 "SLOT_ORIGIN_TRACE",
@@ -84,7 +104,15 @@ fun RecommendationScreen(
                 endMillis = freeEndMillis,
                 originLat = freeOriginLat,
                 originLng = freeOriginLng,
-                originAddressText = freeOriginName // NEW: geocode fallback source
+                originAddressText = freeOriginName, // NEW: geocode fallback source
+                prevEventId = prevEventId,
+                prevEventTitle = prevEventTitle,
+                prevEventStartMillis = prevEventStartMillis,
+                prevEventEndMillis = prevEventEndMillis,
+                nextEventId = nextEventId,
+                nextEventTitle = nextEventTitle,
+                nextEventStartMillis = nextEventStartMillis,
+                nextEventEndMillis = nextEventEndMillis
             )
         } else {
             viewModel.exitSlotMode()
@@ -159,9 +187,9 @@ fun RecommendationScreen(
         ) {
             when {
                 loading -> {
-                    CircularProgressIndicator(
-                        modifier = Modifier.align(Alignment.Center),
-                        color = Color(0xFF6D28D9)
+                    StepLoadingOverlay(
+                        isLoading = loading,
+                        modifier = Modifier.align(Alignment.Center)
                     )
                 }
 
@@ -479,6 +507,27 @@ fun RecommendationCard(
             Spacer(Modifier.height(8.dp))
             Text(place.name, fontWeight = FontWeight.Bold, fontSize = 16.sp)
             Text(place.address, fontSize = 13.sp, color = Color.Gray)
+            place.reasonSentence
+                ?.takeIf { it.isNotBlank() }
+                ?.let { sentence ->
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier.padding(top = 4.dp, bottom = 4.dp)
+                    ) {
+                        Text(
+                            text = "✨ ",
+                            fontSize = 13.sp
+                        )
+                        Text(
+                            text = sentence,
+                            fontSize = 13.sp,
+                            fontStyle = FontStyle.Italic,
+                            color = MaterialTheme.colorScheme.primary,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+                }
             Text("⭐ ${place.rating}", fontSize = 13.sp, color = Color(0xFF6B7280))
 
             // NEW: Distance and travel time
@@ -551,3 +600,4 @@ fun RecommendationCard(
 }
 
 // No change needed for calendar date navigation.
+

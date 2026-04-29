@@ -1,5 +1,8 @@
 package com.fillit.app.data.remote
 
+import com.fillit.app.model.CalendarContext
+import com.google.gson.annotations.SerializedName
+
 data class RecommendationForSlotRequest(
     val origin: RecommendationOrigin,
     val slotStart: Long,
@@ -10,7 +13,8 @@ data class RecommendationForSlotRequest(
     val selectedTransports: List<String>? = null,
     val language: String? = "ko",
     val region: String? = "KR",
-    val maxResults: Int? = 20
+    val maxResults: Int? = 20,
+    val calendarContext: CalendarContext? = null
 )
 
 data class RecommendationOrigin(
@@ -56,5 +60,7 @@ data class RecommendationPlace(
     val weekdayDescriptions: List<String>? = null,
     val primaryType: String? = null,
     val types: List<String>? = null,
-    val reasonTags: List<String>? = null
+    val reasonTags: List<String>? = null,
+    @SerializedName(value = "reasonSentence", alternate = ["reason_sentence"])
+    val reasonSentence: String? = null
 )

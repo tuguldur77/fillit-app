@@ -146,15 +146,27 @@ fun AppNavHost(
                     val dateArg = selectedDate.format(dateFormatter)
                     navController.navigate("${Route.AddSchedule.name}?selectedDate=$dateArg")
                 },
-                onOpenRecommendationsForSlot = { startMillis, endMillis, originLat, originLng, originName ->
+                onOpenRecommendationsForSlot = { startMillis, endMillis, originLat, originLng, originName, prevId, prevTitle, prevStartMillis, prevEndMillis, nextId, nextTitle, nextStartMillis, nextEndMillis ->
                     val encodedName = Uri.encode(originName ?: "")
+                    val encodedPrevId = Uri.encode(prevId ?: "")
+                    val encodedPrevTitle = Uri.encode(prevTitle ?: "")
+                    val encodedNextId = Uri.encode(nextId ?: "")
+                    val encodedNextTitle = Uri.encode(nextTitle ?: "")
                     navController.navigate(
                         "${Route.Recommendations.name}" +
                             "?startMillis=$startMillis" +
                             "&endMillis=$endMillis" +
                             "&originLat=${originLat ?: ""}" +
                             "&originLng=${originLng ?: ""}" +
-                            "&originName=$encodedName"
+                            "&originName=$encodedName" +
+                            "&prevId=$encodedPrevId" +
+                            "&prevTitle=$encodedPrevTitle" +
+                            "&prevStartMillis=${prevStartMillis ?: ""}" +
+                            "&prevEndMillis=${prevEndMillis ?: ""}" +
+                            "&nextId=$encodedNextId" +
+                            "&nextTitle=$encodedNextTitle" +
+                            "&nextStartMillis=${nextStartMillis ?: ""}" +
+                            "&nextEndMillis=${nextEndMillis ?: ""}"
                     )
                 },
                 scheduleViewModel = scheduleViewModel
@@ -183,13 +195,21 @@ fun AppNavHost(
             )
         }
         composable(
-            "${Route.Recommendations.name}?startMillis={startMillis}&endMillis={endMillis}&originLat={originLat}&originLng={originLng}&originName={originName}",
+            "${Route.Recommendations.name}?startMillis={startMillis}&endMillis={endMillis}&originLat={originLat}&originLng={originLng}&originName={originName}&prevId={prevId}&prevTitle={prevTitle}&prevStartMillis={prevStartMillis}&prevEndMillis={prevEndMillis}&nextId={nextId}&nextTitle={nextTitle}&nextStartMillis={nextStartMillis}&nextEndMillis={nextEndMillis}",
             arguments = listOf(
                 navArgument("startMillis") { type = NavType.StringType; defaultValue = "" },
                 navArgument("endMillis") { type = NavType.StringType; defaultValue = "" },
                 navArgument("originLat") { type = NavType.StringType; defaultValue = "" },
                 navArgument("originLng") { type = NavType.StringType; defaultValue = "" },
-                navArgument("originName") { type = NavType.StringType; defaultValue = "" }
+                navArgument("originName") { type = NavType.StringType; defaultValue = "" },
+                navArgument("prevId") { type = NavType.StringType; defaultValue = "" },
+                navArgument("prevTitle") { type = NavType.StringType; defaultValue = "" },
+                navArgument("prevStartMillis") { type = NavType.StringType; defaultValue = "" },
+                navArgument("prevEndMillis") { type = NavType.StringType; defaultValue = "" },
+                navArgument("nextId") { type = NavType.StringType; defaultValue = "" },
+                navArgument("nextTitle") { type = NavType.StringType; defaultValue = "" },
+                navArgument("nextStartMillis") { type = NavType.StringType; defaultValue = "" },
+                navArgument("nextEndMillis") { type = NavType.StringType; defaultValue = "" }
             )
         ) { backStackEntry ->
             val startArg = backStackEntry.arguments?.getString("startMillis").orEmpty()
@@ -198,7 +218,15 @@ fun AppNavHost(
             val endMillis = endArg.toLongOrNull()
             val freeOriginLat = backStackEntry.arguments?.getString("originLat")?.toDoubleOrNull()
             val freeOriginLng = backStackEntry.arguments?.getString("originLng")?.toDoubleOrNull()
-            val freeOriginName = backStackEntry.arguments?.getString("originName").orEmpty().ifBlank { null }
+            val freeOriginName = Uri.decode(backStackEntry.arguments?.getString("originName").orEmpty()).ifBlank { null }
+            val prevEventId = Uri.decode(backStackEntry.arguments?.getString("prevId").orEmpty()).ifBlank { null }
+            val prevEventTitle = Uri.decode(backStackEntry.arguments?.getString("prevTitle").orEmpty()).ifBlank { null }
+            val prevEventStartMillis = backStackEntry.arguments?.getString("prevStartMillis")?.toLongOrNull()
+            val prevEventEndMillis = backStackEntry.arguments?.getString("prevEndMillis")?.toLongOrNull()
+            val nextEventId = Uri.decode(backStackEntry.arguments?.getString("nextId").orEmpty()).ifBlank { null }
+            val nextEventTitle = Uri.decode(backStackEntry.arguments?.getString("nextTitle").orEmpty()).ifBlank { null }
+            val nextEventStartMillis = backStackEntry.arguments?.getString("nextStartMillis")?.toLongOrNull()
+            val nextEventEndMillis = backStackEntry.arguments?.getString("nextEndMillis")?.toLongOrNull()
 
             val recommendationViewModel: RecommendationViewModel = viewModel(backStackEntry)
             RecommendationScreen(
@@ -211,6 +239,14 @@ fun AppNavHost(
                 freeOriginLat = freeOriginLat,
                 freeOriginLng = freeOriginLng,
                 freeOriginName = freeOriginName,
+                prevEventId = prevEventId,
+                prevEventTitle = prevEventTitle,
+                prevEventStartMillis = prevEventStartMillis,
+                prevEventEndMillis = prevEventEndMillis,
+                nextEventId = nextEventId,
+                nextEventTitle = nextEventTitle,
+                nextEventStartMillis = nextEventStartMillis,
+                nextEventEndMillis = nextEventEndMillis,
                 viewModel = recommendationViewModel,
                 onPlaceClick = { p, s, e ->
                     navController.navigate(

@@ -97,8 +97,10 @@ class SavedPlacesViewModel : ViewModel() {
 
     fun removeFavorite(placeId: String) {
         val uid = auth.currentUser?.uid ?: return
-        db.collection("users").document(uid).collection("wanted").document(placeId)
+        db.collection("users").document(uid).collection("wanted").document(favoriteDocId(placeId))
             .delete()
             .addOnFailureListener { e -> Log.e("SavedPlacesVM", "removeFavorite failed: ${e.message}") }
     }
+
+    private fun favoriteDocId(placeId: String): String = placeId.replace("/", "_")
 }

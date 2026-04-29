@@ -11,24 +11,34 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.fillit.app.BuildConfig
 import com.fillit.app.ServiceLocator
+import com.fillit.app.ai.CalendarContextAnalyzer
 import com.fillit.app.ai.GeminiHelper
 import com.fillit.app.data.SearchHistoryRepository
 import com.fillit.app.data.remote.DistanceMatrixApi
 import com.fillit.app.data.remote.LocationRequest
 import com.fillit.app.data.remote.NearbyRequest
-import com.fillit.app.data.remote.RecommendationForSlotRequest
-import com.fillit.app.data.remote.RecommendationOrigin
 import com.fillit.app.data.remote.SearchPlacesApi
 import com.fillit.app.data.remote.TextSearchRequest
 import com.fillit.app.data.remote.ValueText
+import com.fillit.app.model.SessionManager
+import com.fillit.app.model.CalendarContextBody
+import com.fillit.app.model.CalendarContext
+import com.fillit.app.model.CalendarEvent
+import com.fillit.app.model.CalendarGap
+import com.fillit.app.model.LatLngBody
+import com.fillit.app.model.RecommendationForSlotRequest
+import com.fillit.app.model.RecommendationRequestBody
 import com.fillit.app.model.UiPlace
 import com.fillit.app.preferences.UserPreferencesRepository
 import com.google.android.gms.location.LocationServices
 import com.google.firebase.Timestamp
 import com.google.firebase.auth.FirebaseAuth
+import com.google.firebase.firestore.FieldValue
 import com.google.firebase.firestore.FirebaseFirestore
+import com.google.firebase.firestore.ListenerRegistration
 import com.google.firebase.firestore.Query
 import com.google.firebase.firestore.SetOptions
+import com.google.gson.Gson
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -37,8 +47,11 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.SharingStarted
+import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.tasks.await
+import kotlinx.coroutines.async
+import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.withContext
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
@@ -52,8 +65,17 @@ import retrofit2.converter.gson.GsonConverterFactory
 import java.text.Normalizer
 import java.time.Instant
 import java.time.ZoneId
+import java.util.Date
 import java.util.Locale
 import java.util.concurrent.TimeUnit
+
+private fun CalendarContext.toRequestBody() = CalendarContextBody(
+    mood = this.mood,
+    energy = this.energy,
+    social = this.social,
+    suggestedKeywords = this.suggestedKeywords,
+    avoidKeywords = this.avoidKeywords
+)
 
 class RecommendationViewModel(application: Application) : AndroidViewModel(application) {
     private val auth: FirebaseAuth = FirebaseAuth.getInstance()
@@ -62,6 +84,10 @@ class RecommendationViewModel(application: Application) : AndroidViewModel(appli
     private val userPrefs = UserPreferencesRepository(getApplication())
     private val fusedLocationClient = LocationServices.getFusedLocationProviderClient(getApplication())
     private val searchHistoryRepository = SearchHistoryRepository()
+    private val calendarContextAnalyzer = CalendarContextAnalyzer(
+        apiKey = BuildConfig.GEMINI_API_KEY,
+        db = db
+    )
 
     private val distanceMatrixApi: DistanceMatrixApi by lazy {
         Retrofit.Builder()
@@ -117,6 +143,8 @@ class RecommendationViewModel(application: Application) : AndroidViewModel(appli
     private var slotEndMillis: Long? = null
     private var slotOriginLat: Double? = null
     private var slotOriginLng: Double? = null
+    private var slotPreviousEvent: CalendarEvent? = null
+    private var slotNextEvent: CalendarEvent? = null
 
     // new: recent search history exposed to UI
     private val _searchHistory = MutableStateFlow<List<String>>(emptyList())
@@ -125,6 +153,8 @@ class RecommendationViewModel(application: Application) : AndroidViewModel(appli
     // Preserve full clicked UiPlace to avoid partial reconstruction loss through nav args
     private val _selectedPlaceSnapshot = MutableStateFlow<UiPlace?>(null)
     val selectedPlaceSnapshot: StateFlow<UiPlace?> = _selectedPlaceSnapshot.asStateFlow()
+
+    private var favoritesListener: ListenerRegistration? = null
 
     // ✅ add/keep this public method
     fun setSelectedPlaceForFlow(place: UiPlace) {
@@ -143,9 +173,19 @@ class RecommendationViewModel(application: Application) : AndroidViewModel(appli
 
     /** 🔄 Firestore 실시간 찜 반영 */
     private fun observeFavorites() {
-        val uid = auth.currentUser?.uid ?: return
-        db.collection("users").document(uid).collection("wanted")
-            .addSnapshotListener { snap, _ ->
+        val uid = resolveCurrentUserId()
+        if (uid.isNullOrBlank()) {
+            Log.w("RecommendationVM", "observeFavorites skipped: no signed-in user")
+            return
+        }
+
+        favoritesListener?.remove()
+        favoritesListener = db.collection("users").document(uid).collection("wanted")
+            .addSnapshotListener { snap, err ->
+                if (err != null) {
+                    Log.e("RecommendationVM", "favorites listener failed: ${err.message}")
+                    return@addSnapshotListener
+                }
                 val ids = snap?.documents?.mapNotNull { it.getString("placeId") }?.toSet() ?: emptySet()
                 _likedIds.value = ids
                 _places.value = _places.value.map { it.copy(isFavorite = ids.contains(it.placeId)) }
@@ -340,69 +380,79 @@ class RecommendationViewModel(application: Application) : AndroidViewModel(appli
 
     /** 💜 찜 추가/삭제 */
     fun toggleFavorite(item: UiPlace) {
-        val uid = auth.currentUser?.uid ?: return
+        val uid = resolveCurrentUserId()
+        if (uid.isNullOrBlank()) {
+            _error.value = "로그인 후 찜 기능을 사용할 수 있어요."
+            Log.w("RecommendationVM", "toggleFavorite blocked: no signed-in user")
+            return
+        }
+
         val col = db.collection("users").document(uid).collection("wanted")
-        val doc = col.document(item.placeId)
+        val doc = col.document(favoriteDocId(item.placeId))
 
         if (_likedIds.value.contains(item.placeId)) {
             doc.delete().addOnFailureListener { e ->
                 Log.e("RecommendationVM", "Failed to remove favorite: ${e.message}")
             }
         } else {
-            val base = hashMapOf(
-                "placeId" to item.placeId,
-                "name" to item.name,
-                "address" to item.address,
-                "rating" to item.rating,
-                "photoName" to item.photoName,
-                "imageUrl" to item.imageUrl,
-                "types" to (item.types ?: emptyList<String>()),
-                "primaryType" to (item.primaryType ?: ""),
-                // create keywords field immediately as empty list so it's visible in console
-                "keywords" to emptyList<String>()
-            )
-            doc.set(base)
-                .addOnSuccessListener {
-                    val apiKey = BuildConfig.GEMINI_API_KEY
-                    if (apiKey.isBlank()) return@addOnSuccessListener
+            viewModelScope.launch {
+                val validatedKeywords = generateValidatedKeywords(item)
 
-                    viewModelScope.launch {
-                        val rawGemini = try {
-                            GeminiHelper.generateKeywords(
-                                apiKey,
-                                item.name,
-                                item.address,
-                                item.rating,
-                                item.types,
-                                item.primaryType
-                            )
-                        } catch (_: Exception) {
-                            emptyList()
-                        }
-
-                        val refined = refineKeywords(
-                            raw = rawGemini,
-                            name = item.name,
-                            primaryType = item.primaryType,
-                            types = item.types
+                val wantedData = hashMapOf(
+                    "placeId" to item.placeId,
+                    "name" to item.name,
+                    "address" to item.address,
+                    "rating" to item.rating,
+                    "photoName" to item.photoName,
+                    "imageUrl" to item.imageUrl,
+                    "types" to (item.types ?: emptyList<String>()),
+                    "primaryType" to (item.primaryType ?: ""),
+                    "keywords" to validatedKeywords,
+                    "keywordSignals" to validatedKeywords.mapIndexed { idx, k ->
+                        mapOf(
+                            "keyword" to k,
+                            "weight" to (validatedKeywords.size - idx),
+                            "source" to "gemini+validated"
                         )
+                    },
+                    "createdAt" to FieldValue.serverTimestamp()
+                )
 
-                        if (refined.isNotEmpty()) {
-                            val data = mapOf(
-                                "keywords" to refined,
-                                "keywordSignals" to refined.mapIndexed { idx, k ->
-                                    mapOf(
-                                        "keyword" to k,
-                                        "weight" to (refined.size - idx), // 앞쪽 키워드 가중치 높게
-                                        "source" to "gemini+normalize"
-                                    )
-                                }
-                            )
-                            doc.set(data, SetOptions.merge())
-                        }
-                    }
+                try {
+                    doc.set(wantedData).await()
+                    Log.d("WantedSave", "saved to wanted/: ${item.placeId}")
+                } catch (e: Exception) {
+                    _error.value = "찜 저장에 실패했어요. 잠시 후 다시 시도해 주세요."
+                    Log.e("WantedSave", "wanted save failed (critical): placeId=${item.placeId}, msg=${e.message}", e)
+                    throw e
                 }
+
+                val placesData = hashMapOf(
+                    "name" to item.name,
+                    "keywords" to validatedKeywords,
+                    "primaryType" to item.primaryType,
+                    "types" to (item.types ?: emptyList<String>()),
+                    "rating" to item.rating,
+                    "updatedAt" to System.currentTimeMillis()
+                )
+
+                try {
+                    db.collection("places")
+                        .document(item.placeId)
+                        .set(placesData, SetOptions.merge())
+                        .await()
+                    Log.d("WantedSave", "synced to places/: ${item.placeId} keywords: $validatedKeywords")
+                } catch (e: Exception) {
+                    Log.e("WantedSave", "places/ sync failed (non-critical): ${e.message}", e)
+                }
+            }
         }
+    }
+
+    override fun onCleared() {
+        favoritesListener?.remove()
+        favoritesListener = null
+        super.onCleared()
     }
 
     /** ♻️ 기존 찜의 키워드 일괄 재생성 (개발/관리 도구) */
@@ -701,7 +751,15 @@ class RecommendationViewModel(application: Application) : AndroidViewModel(appli
         originLng: Double? = null,
         chip: String? = null,
         searchKeyword: String? = null,
-        originAddressText: String? = null // optional legacy string location for one-time geocode
+        originAddressText: String? = null, // optional legacy string location for one-time geocode
+        prevEventId: String? = null,
+        prevEventTitle: String? = null,
+        prevEventStartMillis: Long? = null,
+        prevEventEndMillis: Long? = null,
+        nextEventId: String? = null,
+        nextEventTitle: String? = null,
+        nextEventStartMillis: Long? = null,
+        nextEventEndMillis: Long? = null
     ) {
         isSlotMode = true
         slotStartMillis = startMillis
@@ -711,10 +769,65 @@ class RecommendationViewModel(application: Application) : AndroidViewModel(appli
             slotOriginLng = originLng
         }
 
+        val incomingPrevEvent = prevEventTitle?.takeIf { it.isNotBlank() }?.let {
+            CalendarEvent(
+                id = prevEventId?.takeIf { id -> id.isNotBlank() } ?: "prev",
+                title = it,
+                startTime = prevEventStartMillis ?: startMillis,
+                endTime = prevEventEndMillis ?: startMillis
+            )
+        }
+        val incomingNextEvent = nextEventTitle?.takeIf { it.isNotBlank() }?.let {
+            CalendarEvent(
+                id = nextEventId?.takeIf { id -> id.isNotBlank() } ?: "next",
+                title = it,
+                startTime = nextEventStartMillis ?: endMillis,
+                endTime = nextEventEndMillis ?: endMillis
+            )
+        }
+
+        if (incomingPrevEvent != null || incomingNextEvent != null) {
+            slotPreviousEvent = incomingPrevEvent
+            slotNextEvent = incomingNextEvent
+        }
+
+        Log.d(
+            "CAL_SLOT_CONTEXT",
+            "stored prev=${slotPreviousEvent?.title} next=${slotNextEvent?.title} incomingPrev=${incomingPrevEvent?.title} incomingNext=${incomingNextEvent?.title}"
+        )
+
         viewModelScope.launch {
             _loading.value = true
             _error.value = null
             try {
+                Log.d("ViewModel", "=== loadForFreeSlot START ===")
+                Log.d("ViewModel", "slotStart: $startMillis (${Date(startMillis)})")
+                Log.d("ViewModel", "slotEnd: $endMillis (${Date(endMillis)})")
+                Log.d("ViewModel", "Starting calendar context analysis...")
+
+                val calendarContextDeferred = async(Dispatchers.IO) {
+                    try {
+                        withTimeout(15000L) {
+                            val uid = resolveCurrentUserId().orEmpty()
+                            if (uid.isBlank()) {
+                                Log.w("ViewModel", "calendar context skipped: uid is blank")
+                                return@withTimeout null
+                            }
+
+                            Log.d("CalendarContext", "using app slot context (Firestore events), CalendarReader bypassed for this flow")
+                            val gap = buildSlotCalendarGap(startMillis, endMillis)
+                            Log.d("ViewModel", "gap: prev=${gap.previousEvent?.title} next=${gap.nextEvent?.title}")
+                            calendarContextAnalyzer.analyze(gap, uid)
+                        }
+                    } catch (e: TimeoutCancellationException) {
+                        Log.w("ViewModel", "calendar context timed out, proceeding without")
+                        null
+                    } catch (e: Exception) {
+                        Log.e("ViewModel", "calendar context failed: ${e.message}")
+                        null
+                    }
+                }
+
                 Log.d(
                     "SLOT_DEBUG",
                     "isSlotMode=$isSlotMode slot=($slotStartMillis,$slotEndMillis) storedOrigin=($slotOriginLat,$slotOriginLng) incomingOrigin=($originLat,$originLng)"
@@ -765,33 +878,70 @@ class RecommendationViewModel(application: Application) : AndroidViewModel(appli
                 val finalLng = useLng ?: 126.9780
 
                 val settingsCategories = userPrefs.selectedCategoriesFlow.first().ifEmpty { setOf("카페") }
+                val timeOfDay = getSlotTimeOfDay(startMillis)
+                val smartSettingsCategories = if (
+                    timeOfDay == "NIGHT" && !settingsCategories.contains("맛집")
+                ) {
+                    settingsCategories + "맛집"
+                } else {
+                    settingsCategories
+                }
                 val finalCategories = when {
                     !chip.isNullOrBlank() -> listOf(chip)
                     !searchKeyword.isNullOrBlank() -> listOf(searchKeyword)
-                    else -> settingsCategories.toList()
+                    else -> smartSettingsCategories.toList()
                 }
 
-                Log.d("SLOT_MODE", "settingsCategories=$settingsCategories chip=$chip finalCategories=$finalCategories")
+                Log.d(
+                    "SLOT_MODE",
+                    "timeOfDay=$timeOfDay settingsCategories=$settingsCategories chip=$chip finalCategories=$finalCategories"
+                )
                 Log.d("SLOT_ORIGIN_FINAL", "origin=($finalLat,$finalLng) slot=($startMillis,$endMillis)")
 
                 val selectedTransports = transport.value.filter { it.value }.keys.toList()
                 val transportValue = if (selectedTransports.contains("자차") && !selectedTransports.contains("도보")) "car" else "walk"
-                val selectedTransportsForServer = if (transportValue == "car") listOf("자차") else listOf("도보")
+                val calendarContext = calendarContextDeferred.await().also {
+                    Log.d("CalendarContext", "context attached=${it != null}")
+                }
 
                 val request = RecommendationForSlotRequest(
-                    origin = RecommendationOrigin(lat = finalLat, lng = finalLng),
+                    requestOrigin = LatLngBody(finalLat, finalLng),
                     slotStart = startMillis,
                     slotEnd = endMillis,
                     categories = finalCategories,
                     transport = transportValue,
-                    selectedCategories = finalCategories,
-                    selectedTransports = selectedTransportsForServer,
-                    language = "ko",
-                    region = "KR",
-                    maxResults = 20
+                    calendarContext = calendarContext?.toRequestBody()
                 )
 
-                val response = api.recommendForSlot(request)
+                val body = RecommendationRequestBody(
+                    origin = mapOf("lat" to request.requestOrigin.lat, "lng" to request.requestOrigin.lng),
+                    slotStart = request.slotStart,
+                    slotEnd = request.slotEnd,
+                    categories = request.categories,
+                    transport = request.transport,
+                    calendarContext = request.calendarContext
+                )
+
+                Log.d("ViewModel", "calendarContext ready: ${request.calendarContext != null}")
+                if (request.calendarContext != null) {
+                    Log.d("ViewModel", "mood: ${request.calendarContext.mood}")
+                    Log.d("ViewModel", "suggestedKeywords: ${request.calendarContext.suggestedKeywords}")
+                    Log.d("ViewModel", "avoidKeywords: ${request.calendarContext.avoidKeywords}")
+                } else {
+                    Log.w("ViewModel", "calendarContext is NULL -> sending without context")
+                }
+                Log.d(
+                    "ViewModel",
+                    "sending to server: ${
+                        if (request.calendarContext != null)
+                            "mood=${request.calendarContext.mood} keywords=${request.calendarContext.suggestedKeywords}"
+                        else "null"
+                    }"
+                )
+                val requestJson = Gson().toJson(body)
+                Log.d("API_REQUEST", "Full request JSON: $requestJson")
+
+                val response = api.recommendForSlot(body)
                 val items = response.data?.places.orEmpty()
 
                 Log.d("API_RESPONSE", response.toString())
@@ -801,6 +951,7 @@ class RecommendationViewModel(application: Application) : AndroidViewModel(appli
                 val disliked = userPrefs.negativePlaceIdsFlow.first()
 
                 val mapped = items.map { p ->
+                    Log.d("ReasonSentence", "place=${p.name} sentence=${p.reasonSentence}")
                     val resolvedImageUrl = resolveBackendImageUrl(p.photoUrl)
                     Log.d("IMAGE_URL_RESOLVE", "raw=${p.photoUrl} resolved=$resolvedImageUrl path=recommendation")
 
@@ -819,7 +970,8 @@ class RecommendationViewModel(application: Application) : AndroidViewModel(appli
                         score = p.score,
                         openNow = p.openNow ?: p.openingHours?.openNow,
                         weekdayDescriptions = p.weekdayDescriptions ?: p.openingHours?.weekdayDescriptions,
-                        reasonTags = p.reasonTags ?: emptyList()
+                        reasonTags = p.reasonTags ?: emptyList(),
+                        reasonSentence = p.reasonSentence?.takeIf { it.isNotBlank() }
                     )
                 }.filterNot { disliked.contains(it.placeId) }
 
@@ -844,6 +996,7 @@ class RecommendationViewModel(application: Application) : AndroidViewModel(appli
                 Log.e("RecommendationVM", "for-slot error", e)
                 _error.value = e.message ?: "슬롯 추천 조회 실패"
             } finally {
+                Log.d("ViewModel", "=== loadForFreeSlot END ===")
                 _loading.value = false
             }
         }
@@ -860,15 +1013,27 @@ class RecommendationViewModel(application: Application) : AndroidViewModel(appli
         }
     }
 
+    private fun getSlotTimeOfDay(slotStartMillis: Long): String {
+        val hour = Instant.ofEpochMilli(slotStartMillis).atZone(ZoneId.systemDefault()).hour
+        return when (hour) {
+            in 6..11 -> "MORNING"
+            in 12..17 -> "AFTERNOON"
+            in 18..22 -> "NIGHT"
+            else -> "NIGHT"
+        }
+    }
+
     private fun resolveGoogleMapsApiKey(): String {
-        return runCatching {
-            val field = BuildConfig::class.java.getDeclaredField("GOOGLE_MAPS_API_KEY")
-            field.isAccessible = true
-            (field.get(null) as? String).orEmpty()
-        }.getOrDefault("")
+        return BuildConfig.MAPS_API_KEY
     }
 
     companion object {
+        private val MASTER_KEYWORDS = setOf(
+            "조용", "감성", "편안", "작업하기좋은", "대화하기좋은",
+            "좌석많은", "채광좋은", "인테리어좋은", "데이트", "모임적합",
+            "시끄러운", "혼잡한", "주차편리", "반려동물가능", "루프탑"
+        )
+
         private fun resolveBackendImageUrl(rawUrl: String?): String? {
             return when {
                 rawUrl.isNullOrBlank() -> null
@@ -942,6 +1107,63 @@ class RecommendationViewModel(application: Application) : AndroidViewModel(appli
 
     private fun ValueText?.safeText(): String = this?.text?.takeIf { it.isNotBlank() } ?: "-"
 
+    private fun buildSlotCalendarGap(startMillis: Long, endMillis: Long): CalendarGap {
+        val gap = CalendarGap(
+            previousEvent = slotPreviousEvent,
+            nextEvent = slotNextEvent,
+            gapStartTime = startMillis,
+            gapEndTime = endMillis,
+            gapDurationMinutes = ((endMillis - startMillis) / 60000L).toInt().coerceAtLeast(0)
+        )
+
+        Log.d("CalendarContext", "gap.previousEvent: ${gap.previousEvent?.title ?: "<null>"}")
+        Log.d("CalendarContext", "gap.nextEvent: ${gap.nextEvent?.title ?: "<null>"}")
+        Log.d("CalendarContext", "gap.durationMinutes: ${gap.gapDurationMinutes}")
+        return gap
+    }
+
+    private suspend fun generateValidatedKeywords(place: UiPlace): List<String> {
+        val geminiKeywords = try {
+            GeminiHelper.generateKeywords(
+                apiKey = BuildConfig.GEMINI_API_KEY,
+                placeName = place.name,
+                address = place.address,
+                rating = place.rating,
+                types = place.types,
+                primaryType = place.primaryType
+            )
+        } catch (e: Exception) {
+            Log.d("GeminiKeywords", "Gemini failed: ${e.message}")
+            emptyList()
+        }
+
+        val validatedKeywords = geminiKeywords.filter { it in MASTER_KEYWORDS }.distinct()
+        Log.d("GeminiKeywords", "raw: $geminiKeywords")
+        Log.d("GeminiKeywords", "validated: $validatedKeywords")
+
+        if (validatedKeywords.isNotEmpty()) return validatedKeywords
+
+        val fallback = mapTypesToKeywords(place.types ?: emptyList())
+        Log.d("GeminiKeywords", "using type fallback: $fallback")
+        return fallback.filter { it in MASTER_KEYWORDS }.distinct()
+    }
+
+    private fun mapTypesToKeywords(types: List<String>): List<String> {
+        val typeMap = mapOf(
+            "cafe" to listOf("감성", "편안"),
+            "coffee_shop" to listOf("조용", "작업하기좋은"),
+            "bakery" to listOf("감성", "편안"),
+            "restaurant" to listOf("대화하기좋은", "모임적합"),
+            "bar" to listOf("모임적합", "대화하기좋은"),
+            "park" to listOf("채광좋은", "편안")
+        )
+
+        return types
+            .map { it.lowercase(Locale.getDefault()) }
+            .flatMap { typeMap[it] ?: emptyList() }
+            .distinct()
+    }
+
     private fun refineKeywords(
         raw: List<String>,
         name: String,
@@ -1004,7 +1226,7 @@ class RecommendationViewModel(application: Application) : AndroidViewModel(appli
         slotOriginLng = originLng
         Log.d(
             "SLOT_MODE",
-            "isSlotMode=$isSlotMode origin=($slotOriginLat,$slotOriginLng) slot=($slotStartMillis,$slotEndMillis)"
+            "isSlotMode=$isSlotMode origin=($slotOriginLat,$slotOriginLng) slot=($slotStartMillis,$slotEndMillis) prev=${slotPreviousEvent?.title} next=${slotNextEvent?.title}"
         )
     }
 
@@ -1014,9 +1236,11 @@ class RecommendationViewModel(application: Application) : AndroidViewModel(appli
         slotEndMillis = null
         slotOriginLat = null
         slotOriginLng = null
+        slotPreviousEvent = null
+        slotNextEvent = null
         Log.d(
             "SLOT_MODE",
-            "isSlotMode=$isSlotMode origin=($slotOriginLat,$slotOriginLng) slot=($slotStartMillis,$slotEndMillis)"
+            "isSlotMode=$isSlotMode origin=($slotOriginLat,$slotOriginLng) slot=($slotStartMillis,$slotEndMillis) prev=${slotPreviousEvent?.title} next=${slotNextEvent?.title}"
         )
     }
 
@@ -1033,5 +1257,15 @@ class RecommendationViewModel(application: Application) : AndroidViewModel(appli
             val first = list?.firstOrNull() ?: return@runCatching null
             Pair(first.latitude, first.longitude)
         }.getOrNull()
+    }
+
+
+    private fun resolveCurrentUserId(): String? {
+        return auth.currentUser?.uid ?: SessionManager.userId
+    }
+
+    private fun favoriteDocId(placeId: String): String {
+        // Firestore doc id cannot contain '/'. Keep original placeId in field.
+        return placeId.replace("/", "_")
     }
 }

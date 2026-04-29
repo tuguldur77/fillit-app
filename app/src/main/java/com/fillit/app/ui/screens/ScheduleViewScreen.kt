@@ -72,7 +72,21 @@ fun ScheduleViewScreen(
     current: Route,
     onNavigate: (Route) -> Unit,
     onAddClick: () -> Unit,
-    onOpenRecommendationsForSlot: (Long, Long, Double?, Double?, String?) -> Unit,
+    onOpenRecommendationsForSlot: (
+        Long,
+        Long,
+        Double?,
+        Double?,
+        String?,
+        String?,
+        String?,
+        Long?,
+        Long?,
+        String?,
+        String?,
+        Long?,
+        Long?
+    ) -> Unit,
     scheduleViewModel: ScheduleViewModel = viewModel(),
     onEditEvent: (Event) -> Unit = {},
     onDeleteEvent: (Event) -> Unit = { scheduleViewModel.deleteEvent(it.id) }
@@ -144,6 +158,10 @@ fun ScheduleViewScreen(
                                     .subList(0, idx)
                                     .lastOrNull { it is TimelineItem.EventItem }
                                     ?.let { (it as TimelineItem.EventItem).event }
+                                val nextEvent = uiState.timeline
+                                    .subList(idx + 1, uiState.timeline.size)
+                                    .firstOrNull { it is TimelineItem.EventItem }
+                                    ?.let { (it as TimelineItem.EventItem).event }
 
                                 val freeOriginLat = previousEvent?.location?.lat
                                 val freeOriginLng = previousEvent?.location?.lng
@@ -154,6 +172,7 @@ fun ScheduleViewScreen(
                                     val endMillis = item.endTime.toDate().time
 
                                     Log.d("CAL_SLOT_ORIGIN", "prevEvent=${previousEvent?.title}")
+                                    Log.d("CAL_SLOT_ORIGIN", "nextEvent=${nextEvent?.title}")
                                     Log.d("CAL_SLOT_ORIGIN", "freeOrigin=($freeOriginLat,$freeOriginLng) name=$freeOriginName")
 
                                     onOpenRecommendationsForSlot(
@@ -161,7 +180,15 @@ fun ScheduleViewScreen(
                                         endMillis,
                                         freeOriginLat,
                                         freeOriginLng,
-                                        freeOriginName
+                                        freeOriginName,
+                                        previousEvent?.id,
+                                        previousEvent?.title,
+                                        previousEvent?.startTime?.toDate()?.time,
+                                        previousEvent?.endTime?.toDate()?.time,
+                                        nextEvent?.id,
+                                        nextEvent?.title,
+                                        nextEvent?.startTime?.toDate()?.time,
+                                        nextEvent?.endTime?.toDate()?.time
                                     )
                                 }
                             }

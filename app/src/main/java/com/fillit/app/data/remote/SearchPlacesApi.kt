@@ -1,5 +1,6 @@
 package com.fillit.app.data.remote
 
+import com.fillit.app.model.RecommendationRequestBody
 import retrofit2.http.*
 
 data class LocationRequest(val lat: Double, val lng: Double)
@@ -101,6 +102,6 @@ interface SearchPlacesApi {
 
     @POST("api/recommendation/for-slot")
     suspend fun recommendForSlot(
-        @Body request: RecommendationForSlotRequest
+        @Body request: RecommendationRequestBody
     ): RecommendationForSlotResponse
 }

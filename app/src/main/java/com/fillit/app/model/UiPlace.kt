@@ -15,5 +15,6 @@ data class UiPlace(
     val score: Double? = null,
     val openNow: Boolean? = null,
     val weekdayDescriptions: List<String>? = null,
-    val reasonTags: List<String>? = null
+    val reasonTags: List<String>? = null,
+    val reasonSentence: String? = null
 )
