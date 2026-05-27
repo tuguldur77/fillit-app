@@ -21,16 +21,17 @@ import retrofit2.converter.gson.GsonConverterFactory
 import java.util.concurrent.TimeUnit
 
 object ServiceLocator {
-    private const val BASE_URL = "http://10.0.2.2:3000/" // Emulator loopback
+    const val BASE_URL = "https://fillit-server-production.up.railway.app/" // Production base URL
 
     private val auth: FirebaseAuth by lazy { FirebaseAuth.getInstance() }
 
-    private val okHttp: OkHttpClient by lazy {
+    val httpClient: OkHttpClient by lazy {
         val logging = HttpLoggingInterceptor().apply { level = HttpLoggingInterceptor.Level.BODY }
         OkHttpClient.Builder()
-            .connectTimeout(15, TimeUnit.SECONDS)
-            .readTimeout(20, TimeUnit.SECONDS)
-            .writeTimeout(20, TimeUnit.SECONDS)
+            .connectTimeout(30, TimeUnit.SECONDS)
+            .readTimeout(30, TimeUnit.SECONDS)
+            .writeTimeout(30, TimeUnit.SECONDS)
+            .callTimeout(30, TimeUnit.SECONDS)
             .addInterceptor(logging)
             .addInterceptor { chain ->
                 val token = try {
@@ -51,7 +52,7 @@ object ServiceLocator {
     private val retrofit: Retrofit by lazy {
         Retrofit.Builder()
             .baseUrl(BASE_URL)
-            .client(okHttp)
+            .client(httpClient)
             .addConverterFactory(GsonConverterFactory.create())
             .build()
     }

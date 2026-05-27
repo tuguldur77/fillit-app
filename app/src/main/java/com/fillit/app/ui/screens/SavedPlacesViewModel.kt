@@ -9,10 +9,15 @@ import com.fillit.app.data.remote.SearchPlacesApi
 import com.fillit.app.model.UiPlace
 import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.firestore.FirebaseFirestore
+import com.google.firebase.Timestamp
+import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.SharedFlow
+import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.tasks.await
 
 class SavedPlacesViewModel : ViewModel() {
     private val auth: FirebaseAuth = FirebaseAuth.getInstance()
@@ -27,6 +32,9 @@ class SavedPlacesViewModel : ViewModel() {
 
     private val _error = MutableStateFlow<String?>(null)
     val error = _error.asStateFlow()
+
+    private val _favoriteMessages = MutableSharedFlow<String>(extraBufferCapacity = 1)
+    val favoriteMessages: SharedFlow<String> = _favoriteMessages.asSharedFlow()
 
     init {
         observeFavorites()
@@ -87,10 +95,15 @@ class SavedPlacesViewModel : ViewModel() {
 
     // Helper: resolve backend relative photo paths to absolute URL used by Coil
     private fun resolveBackendImageUrl(rawUrl: String?): String? {
+        val baseUrl = ServiceLocator.BASE_URL
         return when {
             rawUrl.isNullOrBlank() -> null
+            rawUrl.startsWith("http://10.0.2.2:3000", ignoreCase = true) -> {
+                val suffix = rawUrl.removePrefix("http://10.0.2.2:3000")
+                baseUrl.trimEnd('/') + suffix
+            }
             rawUrl.startsWith("http", ignoreCase = true) -> rawUrl
-            rawUrl.startsWith("/") -> "http://10.0.2.2:3000$rawUrl"
+            rawUrl.startsWith("/") -> baseUrl.trimEnd('/') + rawUrl
             else -> null
         }
     }
@@ -103,4 +116,44 @@ class SavedPlacesViewModel : ViewModel() {
     }
 
     private fun favoriteDocId(placeId: String): String = placeId.replace("/", "_")
+
+    fun toggleFavorite(place: UiPlace) {
+        val uid = auth.currentUser?.uid ?: return
+        val docId = favoriteDocId(place.placeId)
+        val ref = db.collection("users").document(uid).collection("wanted").document(docId)
+        val previousFavorites = _favorites.value
+
+        viewModelScope.launch {
+            if (place.isFavorite) {
+                try {
+                    ref.delete().await()
+                    _favorites.value = _favorites.value.filterNot { it.placeId == place.placeId }
+                } catch (e: Exception) {
+                    _favorites.value = previousFavorites
+                    _favoriteMessages.tryEmit("찜 해제를 실패했어요. 잠시 후 다시 시도해 주세요.")
+                    Log.e("SavedPlacesVM", "toggleFavorite remove failed: ${e.message}")
+                }
+            } else {
+                val data = hashMapOf(
+                    "placeId" to place.placeId,
+                    "name" to place.name,
+                    "address" to place.address,
+                    "rating" to place.rating,
+                    "photoName" to place.photoName,
+                    "imageUrl" to place.imageUrl,
+                    "primaryType" to place.primaryType,
+                    "types" to (place.types ?: emptyList<String>()),
+                    "createdAt" to Timestamp.now()
+                )
+                try {
+                    ref.set(data).await()
+                    _favorites.value = _favorites.value + place.copy(isFavorite = true)
+                } catch (e: Exception) {
+                    _favorites.value = previousFavorites
+                    _favoriteMessages.tryEmit("찜 저장에 실패했어요. 잠시 후 다시 시도해 주세요.")
+                    Log.e("SavedPlacesVM", "toggleFavorite add failed: ${e.message}")
+                }
+            }
+        }
+    }
 }

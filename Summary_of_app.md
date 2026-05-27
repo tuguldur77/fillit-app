@@ -110,7 +110,7 @@
 1. 별도 리포지토리에서 서버 코드를 클론합니다.
 2. 환경 변수에 Google Places API 키를 설정합니다.
 3. 서버를 실행합니다: `npm start`
-4. 앱에서 서버 URL을 `http://10.0.2.2:3000` (에뮬레이터) 또는 실제 IP로 설정합니다.
+4. 앱에서 서버 URL을 `https://fillit-server-production.up.railway.app/`로 설정합니다.
 
 ## 사용법
 1. 앱을 실행하고 Google 로그인을 수행합니다.

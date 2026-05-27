@@ -232,7 +232,6 @@ fun AppNavHost(
             RecommendationScreen(
                 current = Route.Recommendations,
                 onBack = { navController.popBackStack() },
-                onFilter = { /* TODO */ },
                 onNavigate = { r -> navController.navigate(r.name) },
                 freeStartMillis = startMillis,
                 freeEndMillis = endMillis,

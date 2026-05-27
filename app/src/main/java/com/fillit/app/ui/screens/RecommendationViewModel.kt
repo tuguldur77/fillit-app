@@ -42,6 +42,9 @@ import com.google.gson.Gson
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.SharedFlow
+import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
@@ -54,7 +57,6 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.withContext
 import okhttp3.MediaType.Companion.toMediaType
-import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONArray
@@ -67,7 +69,6 @@ import java.time.Instant
 import java.time.ZoneId
 import java.util.Date
 import java.util.Locale
-import java.util.concurrent.TimeUnit
 
 private fun CalendarContext.toRequestBody() = CalendarContextBody(
     mood = this.mood,
@@ -92,6 +93,7 @@ class RecommendationViewModel(application: Application) : AndroidViewModel(appli
     private val distanceMatrixApi: DistanceMatrixApi by lazy {
         Retrofit.Builder()
             .baseUrl("https://maps.googleapis.com/")
+            .client(ServiceLocator.httpClient)
             .addConverterFactory(GsonConverterFactory.create())
             .build()
             .create(DistanceMatrixApi::class.java)
@@ -128,14 +130,17 @@ class RecommendationViewModel(application: Application) : AndroidViewModel(appli
     private val _places = MutableStateFlow<List<UiPlace>>(emptyList())
     val places: StateFlow<List<UiPlace>> = _places.asStateFlow()
 
+    private val _likedIds = MutableStateFlow<Set<String>>(emptySet())
+    val likedIds: StateFlow<Set<String>> = _likedIds.asStateFlow()
+
     private val _loading = MutableStateFlow(false)
     val loading = _loading.asStateFlow()
 
     private val _error = MutableStateFlow<String?>(null)
     val error = _error.asStateFlow()
 
-    private val _likedIds = MutableStateFlow<Set<String>>(emptySet())
-    val likedIds = _likedIds.asStateFlow()
+    private val _favoriteMessages = MutableSharedFlow<String>(extraBufferCapacity = 1)
+    val favoriteMessages: SharedFlow<String> = _favoriteMessages.asSharedFlow()
 
     // persistent slot-mode state
     private var isSlotMode: Boolean = false
@@ -389,62 +394,79 @@ class RecommendationViewModel(application: Application) : AndroidViewModel(appli
 
         val col = db.collection("users").document(uid).collection("wanted")
         val doc = col.document(favoriteDocId(item.placeId))
+        val willFavorite = !_likedIds.value.contains(item.placeId)
+        val previousLiked = _likedIds.value
+        val previousPlaces = _places.value
 
-        if (_likedIds.value.contains(item.placeId)) {
-            doc.delete().addOnFailureListener { e ->
-                Log.e("RecommendationVM", "Failed to remove favorite: ${e.message}")
+        // Optimistic UI update
+        _likedIds.value = if (willFavorite) _likedIds.value + item.placeId else _likedIds.value - item.placeId
+        _places.value = _places.value.map {
+            if (it.placeId == item.placeId) it.copy(isFavorite = willFavorite) else it
+        }
+
+        viewModelScope.launch {
+            if (!willFavorite) {
+                try {
+                    doc.delete().await()
+                } catch (e: Exception) {
+                    _likedIds.value = previousLiked
+                    _places.value = previousPlaces
+                    _favoriteMessages.tryEmit("찜 해제를 실패했어요. 잠시 후 다시 시도해 주세요.")
+                    Log.e("RecommendationVM", "Failed to remove favorite: ${e.message}")
+                }
+                return@launch
             }
-        } else {
-            viewModelScope.launch {
-                val validatedKeywords = generateValidatedKeywords(item)
 
-                val wantedData = hashMapOf(
-                    "placeId" to item.placeId,
-                    "name" to item.name,
-                    "address" to item.address,
-                    "rating" to item.rating,
-                    "photoName" to item.photoName,
-                    "imageUrl" to item.imageUrl,
-                    "types" to (item.types ?: emptyList<String>()),
-                    "primaryType" to (item.primaryType ?: ""),
-                    "keywords" to validatedKeywords,
-                    "keywordSignals" to validatedKeywords.mapIndexed { idx, k ->
-                        mapOf(
-                            "keyword" to k,
-                            "weight" to (validatedKeywords.size - idx),
-                            "source" to "gemini+validated"
-                        )
-                    },
-                    "createdAt" to FieldValue.serverTimestamp()
-                )
+            val validatedKeywords = generateValidatedKeywords(item)
+            val wantedData = hashMapOf(
+                "placeId" to item.placeId,
+                "name" to item.name,
+                "address" to item.address,
+                "rating" to item.rating,
+                "photoName" to item.photoName,
+                "imageUrl" to item.imageUrl,
+                "types" to (item.types ?: emptyList<String>()),
+                "primaryType" to (item.primaryType ?: ""),
+                "keywords" to validatedKeywords,
+                "keywordSignals" to validatedKeywords.mapIndexed { idx, k ->
+                    mapOf(
+                        "keyword" to k,
+                        "weight" to (validatedKeywords.size - idx),
+                        "source" to "gemini+validated"
+                    )
+                },
+                "score" to item.score,
+                "createdAt" to FieldValue.serverTimestamp()
+            )
 
-                try {
-                    doc.set(wantedData).await()
-                    Log.d("WantedSave", "saved to wanted/: ${item.placeId}")
-                } catch (e: Exception) {
-                    _error.value = "찜 저장에 실패했어요. 잠시 후 다시 시도해 주세요."
-                    Log.e("WantedSave", "wanted save failed (critical): placeId=${item.placeId}, msg=${e.message}", e)
-                    throw e
-                }
+            try {
+                doc.set(wantedData).await()
+                Log.d("WantedSave", "saved to wanted/: ${item.placeId}")
+            } catch (e: Exception) {
+                _likedIds.value = previousLiked
+                _places.value = previousPlaces
+                _favoriteMessages.tryEmit("찜 저장에 실패했어요. 잠시 후 다시 시도해 주세요.")
+                Log.e("WantedSave", "wanted save failed (critical): placeId=${item.placeId}, msg=${e.message}", e)
+                return@launch
+            }
 
-                val placesData = hashMapOf(
-                    "name" to item.name,
-                    "keywords" to validatedKeywords,
-                    "primaryType" to item.primaryType,
-                    "types" to (item.types ?: emptyList<String>()),
-                    "rating" to item.rating,
-                    "updatedAt" to System.currentTimeMillis()
-                )
+            val placesData = hashMapOf(
+                "name" to item.name,
+                "keywords" to validatedKeywords,
+                "primaryType" to item.primaryType,
+                "types" to (item.types ?: emptyList<String>()),
+                "rating" to item.rating,
+                "updatedAt" to System.currentTimeMillis()
+            )
 
-                try {
-                    db.collection("places")
-                        .document(item.placeId)
-                        .set(placesData, SetOptions.merge())
-                        .await()
-                    Log.d("WantedSave", "synced to places/: ${item.placeId} keywords: $validatedKeywords")
-                } catch (e: Exception) {
-                    Log.e("WantedSave", "places/ sync failed (non-critical): ${e.message}", e)
-                }
+            try {
+                db.collection("places")
+                    .document(item.placeId)
+                    .set(placesData, SetOptions.merge())
+                    .await()
+                Log.d("WantedSave", "synced to places/: ${item.placeId} keywords: $validatedKeywords")
+            } catch (e: Exception) {
+                Log.e("WantedSave", "places/ sync failed (non-critical): ${e.message}", e)
             }
         }
     }
@@ -710,8 +732,8 @@ class RecommendationViewModel(application: Application) : AndroidViewModel(appli
                         "POST /api/recommendation/feedback placeId=${place.placeId} primaryType=${place.primaryType} types=${place.types}"
                     )
 
-                    val url = "http://10.0.2.2:3000/api/recommendation/feedback"
-                    val client = OkHttpClient()
+                    val url = ServiceLocator.BASE_URL.trimEnd('/') + "/api/recommendation/feedback"
+                    val client = ServiceLocator.httpClient
                     val mediaType = "application/json; charset=utf-8".toMediaType()
 
                     val req = Request.Builder()
@@ -1035,10 +1057,11 @@ class RecommendationViewModel(application: Application) : AndroidViewModel(appli
         )
 
         private fun resolveBackendImageUrl(rawUrl: String?): String? {
+            val baseUrl = ServiceLocator.BASE_URL
             return when {
                 rawUrl.isNullOrBlank() -> null
                 rawUrl.startsWith("http", ignoreCase = true) -> rawUrl
-                rawUrl.startsWith("/") -> "http://10.0.2.2:3000$rawUrl"
+                rawUrl.startsWith("/") -> baseUrl.trimEnd('/') + rawUrl
                 else -> null
             }
         }

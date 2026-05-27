@@ -12,7 +12,6 @@ import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
-import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.FavoriteBorder
 import androidx.compose.material.icons.filled.Search
@@ -50,7 +49,6 @@ import com.fillit.app.ui.components.StepLoadingOverlay
 fun RecommendationScreen(
     current: Route,
     onBack: () -> Unit,
-    onFilter: () -> Unit,
     onNavigate: (Route) -> Unit,
     freeStartMillis: Long? = null,
     freeEndMillis: Long? = null,
@@ -128,10 +126,17 @@ fun RecommendationScreen(
     val likedIds by viewModel.likedIds.collectAsState()
     val recentSearches by viewModel.searchHistory.collectAsState()
 
-    // Search UI state (local). We now call server-side search to use chip/type mapping.
     var searchQuery by remember { mutableStateOf("") }
-    var isSearchActive by remember { mutableStateOf(false) } // NEW: show recents only while typing / focused
+    var isSearchActive by remember { mutableStateOf(false) }
     val focusManager = LocalFocusManager.current
+
+    val snackbarHostState = remember { SnackbarHostState() }
+
+    LaunchedEffect(Unit) {
+        viewModel.favoriteMessages.collect { message ->
+            snackbarHostState.showSnackbar(message)
+        }
+    }
 
     Scaffold(
         containerColor = Color.Transparent,
@@ -151,9 +156,6 @@ fun RecommendationScreen(
                     }
                 },
                 actions = {
-                    IconButton(onClick = onFilter) {
-                        Icon(Icons.Default.Edit, contentDescription = "필터")
-                    }
                     if (BuildConfig.DEBUG) {
                         var showMenu by remember { mutableStateOf(false) }
                         IconButton(onClick = { showMenu = true }) {
@@ -173,7 +175,8 @@ fun RecommendationScreen(
                 colors = TopAppBarDefaults.topAppBarColors(containerColor = Color.White)
             )
         },
-        bottomBar = { FillItBottomBar(current = current, onNavigate = onNavigate) }
+        bottomBar = { FillItBottomBar(current = current, onNavigate = onNavigate) },
+        snackbarHost = { SnackbarHost(snackbarHostState) }
     ) { inner ->
         Box(
             modifier = Modifier
@@ -370,7 +373,7 @@ fun RecommendationScreen(
                                     RecommendationCard(
                                         place = p,
                                         isFavorite = likedIds.contains(p.placeId),
-                                        onToggleFavorite = { viewModel.toggleFavorite(p) },
+                                        onToggleLike = { viewModel.toggleFavorite(it) },
                                         onClick = {
                                             viewModel.setSelectedPlaceForFlow(p) // preserve full UiPlace
                                             Log.d(
@@ -442,7 +445,7 @@ private fun SuggestionChips(onPick: (String) -> Unit) {
 fun RecommendationCard(
     place: UiPlace,
     isFavorite: Boolean,
-    onToggleFavorite: () -> Unit,
+    onToggleLike: (UiPlace) -> Unit,
     onClick: () -> Unit
 ) {
     Log.d("CARD_IMAGE_DEBUG", "name=${place.name}, imageUrl=${place.imageUrl}")
@@ -495,7 +498,7 @@ fun RecommendationCard(
                     }
                 }
 
-                IconButton(onClick = onToggleFavorite) {
+                IconButton(onClick = { onToggleLike(place) }) {
                     Icon(
                         if (isFavorite) Icons.Default.Favorite else Icons.Default.FavoriteBorder,
                         contentDescription = "찜",
@@ -600,4 +603,3 @@ fun RecommendationCard(
 }
 
 // No change needed for calendar date navigation.
-

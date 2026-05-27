@@ -33,6 +33,13 @@ fun SavedPlacesScreen(
     val favorites by viewModel.favorites.collectAsState()
     val loading by viewModel.loading.collectAsState()
     val error by viewModel.error.collectAsState()
+    val snackbarHostState = remember { SnackbarHostState() }
+
+    LaunchedEffect(Unit) {
+        viewModel.favoriteMessages.collect { message ->
+            snackbarHostState.showSnackbar(message)
+        }
+    }
 
     Scaffold(
         containerColor = Color.Transparent,
@@ -60,7 +67,8 @@ fun SavedPlacesScreen(
                 colors = TopAppBarDefaults.topAppBarColors(containerColor = Color.White)
             )
         },
-        bottomBar = { FillItBottomBar(current = current, onNavigate = onNavigate) }
+        bottomBar = { FillItBottomBar(current = current, onNavigate = onNavigate) },
+        snackbarHost = { SnackbarHost(snackbarHostState) }
     ) { inner ->
         Box(
             modifier = Modifier
@@ -128,7 +136,7 @@ fun SavedPlacesScreen(
                                         }
                                         Text("⭐ ${place.rating}", color = Color(0xFF6B7280), fontSize = 12.sp)
                                     }
-                                    IconButton(onClick = { viewModel.removeFavorite(place.placeId) }) {
+                                    IconButton(onClick = { viewModel.toggleFavorite(place) }) {
                                         Icon(Icons.Default.Delete, contentDescription = "Remove")
                                     }
                                 }

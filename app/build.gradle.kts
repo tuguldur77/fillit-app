@@ -5,17 +5,15 @@ plugins {
     id("com.google.gms.google-services")
 }
 
-// Read GEMINI_API_KEY from (priority) Gradle property -> local.properties -> environment
+// Read API keys only from local.properties for local safety and predictable builds.
 val localPropsFile = rootProject.file("local.properties")
+val localPropsLines = if (localPropsFile.exists()) localPropsFile.readLines() else emptyList()
+
 val geminiKey: String = (
-    providers.gradleProperty("GEMINI_API_KEY").orNull
-        ?: (if (localPropsFile.exists()) {
-            localPropsFile.readLines()
-                .firstOrNull { it.trim().startsWith("GEMINI_API_KEY=") }
-                ?.substringAfter("=")
-                ?.trim()
-        } else null)
-        ?: System.getenv("GEMINI_API_KEY")
+    localPropsLines
+        .firstOrNull { it.trim().startsWith("GEMINI_API_KEY=") }
+        ?.substringAfter("=")
+        ?.trim()
         ?: ""
 ).trim()
 
@@ -24,14 +22,10 @@ if (geminiKey.isBlank()) {
 }
 
 val mapsKey: String = (
-    providers.gradleProperty("MAPS_API_KEY").orNull
-        ?: (if (localPropsFile.exists()) {
-            localPropsFile.readLines()
-                .firstOrNull { it.trim().startsWith("MAPS_API_KEY=") }
-                ?.substringAfter("=")
-                ?.trim()
-        } else null)
-        ?: System.getenv("MAPS_API_KEY")
+    localPropsLines
+        .firstOrNull { it.trim().startsWith("MAPS_API_KEY=") }
+        ?.substringAfter("=")
+        ?.trim()
         ?: ""
 ).trim()
 
